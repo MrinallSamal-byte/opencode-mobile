@@ -19,4 +19,21 @@ class FormatTest {
     fun formatsSubMinuteReset() {
         assertEquals("Resets in <1m", resetLabel(now + 30_000L, now))
     }
+
+    @Test
+    fun formatsGenerationDuration() {
+        assertEquals("450ms", formatDuration(450))
+        assertEquals("1.0s", formatDuration(1000))
+        assertEquals("1.5s", formatDuration(1500))
+        assertEquals("2.4s", formatDuration(2380))
+    }
+
+    @Test
+    fun countsWordsCorrectly() {
+        assertEquals(0, countWords(""))
+        assertEquals(0, countWords("   \n\t  "))
+        assertEquals(1, countWords("Hello"))
+        assertEquals(4, countWords("Hello world from OpenCode!"))
+        assertEquals(3, countWords("  Multi \n line   words  "))
+    }
 }

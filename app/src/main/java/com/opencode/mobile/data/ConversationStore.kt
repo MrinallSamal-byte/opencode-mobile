@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -70,7 +71,12 @@ class ConversationStore(context: Context) {
                 }
             }
         }
-        refresh()
+        val summary = updated.toSummary()
+        _summaries.update { current ->
+            val mutable = current.filterNot { it.id == summary.id }.toMutableList()
+            mutable.add(0, summary)
+            mutable.sortedByDescending { it.updatedAt }
+        }
         return updated
     }
 
@@ -81,7 +87,109 @@ class ConversationStore(context: Context) {
                 File(attachmentsDirectory, id).deleteRecursively()
             }
         }
-        refresh()
+        _summaries.update { current -> current.filterNot { it.id == id } }
+    }
+
+    suspend fun rename(id: String, newTitle: String): Conversation? {
+        val trimmed = newTitle.trim().take(100)
+        if (trimmed.isEmpty()) return null
+        val loaded = load(id) ?: return null
+        if (loaded.title == trimmed) return loaded
+        val updated = loaded.copy(title = trimmed)
+        return save(updated)
+    }
+
+    suspend fun fork(id: String): Conversation? {
+        val original = load(id) ?: return null
+        val now = System.currentTimeMillis()
+        val forkedId = UUID.randomUUID().toString()
+        withContext(Dispatchers.IO) {
+            val originalAttachDir = File(attachmentsDirectory, id)
+            if (originalAttachDir.exists()) {
+                val targetAttachDir = File(attachmentsDirectory, forkedId)
+                targetAttachDir.mkdirs()
+                originalAttachDir.copyRecursively(targetAttachDir, overwrite = true)
+            }
+        }
+        val updatedMessages = original.messages.map { msg ->
+            if (msg.attachments.isEmpty()) {
+                msg
+            } else {
+                msg.copy(
+                    attachments = msg.attachments.map { att ->
+                        val fileName = File(att.localPath).name
+                        val targetFile = File(File(attachmentsDirectory, forkedId), fileName)
+                        att.copy(localPath = targetFile.absolutePath)
+                    },
+                )
+            }
+        }
+        val forked = original.copy(
+            id = forkedId,
+            title = "${original.title} (Fork)",
+            createdAt = now,
+            updatedAt = now,
+            messages = updatedMessages,
+        )
+        return save(forked)
+    }
+
+    fun exportToMarkdown(conversation: Conversation): String = buildString {
+        appendLine("# ${conversation.title}")
+        appendLine("**Model:** ${ModelCatalog.nameFor(conversation.modelId)} (${conversation.modelId})")
+        val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(conversation.createdAt))
+        appendLine("**Date:** $dateStr")
+        appendLine()
+        appendLine("---")
+        appendLine()
+        for (message in conversation.messages) {
+            when {
+                message.isUser -> {
+                    appendLine("### User")
+                    if (message.attachments.isNotEmpty()) {
+                        appendLine("*(Attached: ${message.attachments.joinToString { it.fileName }})*")
+                        appendLine()
+                    }
+                    if (message.content.isNotBlank()) {
+                        appendLine(message.content)
+                        appendLine()
+                    }
+                }
+                message.isTool -> {
+                    val toolName = message.toolName ?: "tool"
+                    appendLine("<details>")
+                    appendLine("<summary>Tool ($toolName): ${message.toolDetail.orEmpty()}</summary>")
+                    appendLine()
+                    appendLine("```")
+                    appendLine(message.content)
+                    appendLine("```")
+                    appendLine("</details>")
+                    appendLine()
+                }
+                message.role == ChatMessage.ROLE_ASSISTANT -> {
+                    val modelName = message.model?.let { ModelCatalog.nameFor(it) }
+                        ?: ModelCatalog.nameFor(conversation.modelId)
+                    appendLine("### Assistant ($modelName)")
+                    if (message.reasoning.isNotBlank()) {
+                        appendLine("<details>")
+                        appendLine("<summary>Thinking Process</summary>")
+                        appendLine()
+                        appendLine(message.reasoning)
+                        appendLine("</details>")
+                        appendLine()
+                    }
+                    if (message.content.isNotBlank()) {
+                        appendLine(message.content)
+                        appendLine()
+                    }
+                    if (message.error != null) {
+                        appendLine("> **Error:** ${message.error}")
+                        appendLine()
+                    }
+                }
+            }
+        }
     }
 
     suspend fun refresh() {

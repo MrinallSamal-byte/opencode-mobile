@@ -30,22 +30,39 @@ object SseParser {
         if (payload == "[DONE]") return SseParseResult(finished = true)
 
         val root = runCatching { json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return null
-        (root["error"] as? JsonObject)?.let { errorObject ->
-            val message = (errorObject["message"] as? JsonPrimitive)?.contentOrNull
-            return SseParseResult(error = message ?: "The model returned an error.")
+
+        // 1. Check for error object or string
+        val errorElement = root["error"]
+        if (errorElement != null) {
+            val errorMessage = when (errorElement) {
+                is JsonObject -> (errorElement["message"] as? JsonPrimitive)?.contentOrNull
+                    ?: (errorElement["msg"] as? JsonPrimitive)?.contentOrNull
+                    ?: (errorElement["detail"] as? JsonPrimitive)?.contentOrNull
+                    ?: errorElement.toString()
+                is JsonPrimitive -> errorElement.contentOrNull
+                else -> errorElement.toString()
+            }
+            return SseParseResult(error = errorMessage?.ifBlank { null } ?: "The model returned an error.")
+        }
+
+        // Check for root-level error detail
+        val rootDetail = (root["detail"] as? JsonPrimitive)?.contentOrNull
+        if (!rootDetail.isNullOrBlank()) {
+            return SseParseResult(error = rootDetail)
         }
 
         val choices = root["choices"] as? JsonArray ?: return null
         val choice = choices.firstOrNull() as? JsonObject ?: return null
-        val delta = choice["delta"] as? JsonObject
+        val delta = (choice["delta"] as? JsonObject) ?: (choice["message"] as? JsonObject)
         val content = (delta?.get("content") as? JsonPrimitive)?.contentOrNull
         val reasoning = (delta?.get("reasoning_content") as? JsonPrimitive)?.contentOrNull
             ?: (delta?.get("reasoning") as? JsonPrimitive)?.contentOrNull
-        val toolCalls = (delta?.get("tool_calls") as? JsonArray)?.mapNotNull { element ->
-            val call = element as? JsonObject ?: return@mapNotNull null
+            ?: (delta?.get("thought") as? JsonPrimitive)?.contentOrNull
+        val toolCalls = (delta?.get("tool_calls") as? JsonArray)?.mapIndexedNotNull { fallbackIndex, element ->
+            val call = element as? JsonObject ?: return@mapIndexedNotNull null
             val function = call["function"] as? JsonObject
             ToolCallDelta(
-                index = (call["index"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0,
+                index = (call["index"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: fallbackIndex,
                 id = (call["id"] as? JsonPrimitive)?.contentOrNull,
                 name = (function?.get("name") as? JsonPrimitive)?.contentOrNull,
                 arguments = (function?.get("arguments") as? JsonPrimitive)?.contentOrNull,

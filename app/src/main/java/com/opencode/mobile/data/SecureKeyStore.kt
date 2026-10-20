@@ -14,7 +14,17 @@ import javax.crypto.spec.GCMParameterSpec
 class SecureKeyStore {
     private val alias = "opencode_api_key_v1"
 
-    fun encrypt(plainText: String): String {
+    fun encrypt(plainText: String): String? = runCatching {
+        performEncrypt(plainText)
+    }.getOrElse {
+        // If initial encryption failed (e.g. stale or corrupted keystore alias), attempt recovery once
+        runCatching {
+            clearKey()
+            performEncrypt(plainText)
+        }.getOrNull()
+    }
+
+    private fun performEncrypt(plainText: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val cipherText = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
@@ -37,7 +47,16 @@ class SecureKeyStore {
 
     private fun getOrCreateKey(): SecretKey {
         val store = keyStore()
-        (store.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+        val existing = runCatching {
+            (store.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.secretKey
+        }.getOrNull()
+        if (existing != null) {
+            return existing
+        }
+
+        // Corrupted entry or missing: delete before regenerating
+        runCatching { store.deleteEntry(alias) }
+
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         generator.init(
             KeyGenParameterSpec.Builder(

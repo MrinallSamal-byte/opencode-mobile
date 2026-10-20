@@ -1,5 +1,6 @@
 package com.opencode.mobile.ui
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,10 +43,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.BrokenImage
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DataUsage
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.GraphicEq
@@ -55,6 +58,7 @@ import androidx.compose.material.icons.outlined.NorthWest
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
@@ -66,6 +70,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -94,8 +99,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -109,6 +117,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.compose.elements.MarkdownTable
 import com.mikepenz.markdown.compose.elements.MarkdownTableHeader
 import com.mikepenz.markdown.compose.elements.MarkdownTableRow
@@ -132,6 +142,7 @@ import java.io.File
 
 private const val BOTTOM_ANCHOR = "bottom-anchor"
 
+@Suppress("DEPRECATION")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
@@ -141,6 +152,7 @@ fun ChatScreen(
     onOpenUsage: () -> Unit,
     onOpenSettings: () -> Unit,
     onDeleted: () -> Unit,
+    onForked: (String) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -152,9 +164,13 @@ fun ChatScreen(
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var followBottom by remember { mutableStateOf(true) }
     var showModels by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
+    var renameInput by remember(conversation?.title, renameOpen) { mutableStateOf(conversation?.title.orEmpty()) }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmShell by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -196,7 +212,8 @@ fun ChatScreen(
         val pin: suspend () -> Unit = {
             snapshotFlow { listState.canScrollForward }.collect { canScrollForward ->
                 if (canScrollForward && followBottom && !listState.isScrollInProgress) {
-                    listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
+                    val targetIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                    listState.scrollToItem(targetIndex)
                 }
             }
         }
@@ -237,6 +254,50 @@ fun ChatScreen(
                                 shape = RoundedCornerShape(14.dp),
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Rename chat") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        renameInput = conversation?.title.orEmpty()
+                                        renameOpen = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Duplicate / Fork") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        viewModel.forkConversation(onForked)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share as Markdown") },
+                                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        val markdown = viewModel.exportMarkdown() ?: return@DropdownMenuItem
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, markdown)
+                                        }
+                                        context.startActivity(Intent.createChooser(intent, "Share conversation"))
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy as Markdown") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        val markdown = viewModel.exportMarkdown() ?: return@DropdownMenuItem
+                                        clipboard.setText(AnnotatedString(markdown))
+                                        scope.launch { snackbarHostState.showSnackbar("Conversation copied to clipboard") }
+                                    },
+                                )
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Usage") },
                                     leadingIcon = { Icon(Icons.Outlined.DataUsage, contentDescription = null) },
@@ -358,6 +419,7 @@ fun ChatScreen(
                                     // Footer belongs to the end of an assistant turn, not to each step.
                                     showFooter = next == null || next.isUser,
                                     onRetry = viewModel::retry,
+                                    onEdit = viewModel::editMessage,
                                     modifier = Modifier.padding(top = itemGap(previous, message)),
                                 )
                             }
@@ -450,6 +512,37 @@ fun ChatScreen(
             },
         )
     }
+
+    if (renameOpen) {
+        AlertDialog(
+            onDismissRequest = { renameOpen = false },
+            title = { Text("Rename chat") },
+            text = {
+                OutlinedTextField(
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmed = renameInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            viewModel.rename(trimmed)
+                        }
+                        renameOpen = false
+                    },
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameOpen = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 /** An assistant message that only requested tools; its results are shown by the tool messages. */
@@ -469,14 +562,22 @@ private fun itemGap(previous: ChatMessage?, current: ChatMessage): Dp = when {
 
 @Composable
 fun AttachmentImage(attachment: ChatAttachment, modifier: Modifier = Modifier) {
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, attachment.id) {
-        value = withContext(Dispatchers.IO) {
+    var isLoaded by remember(attachment.id) { mutableStateOf(false) }
+    var bitmap by remember(attachment.id) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(attachment.id) {
+        bitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val options = BitmapFactory.Options().apply { inSampleSize = 2 }
-                BitmapFactory.decodeFile(File(attachment.localPath).absolutePath, options)?.asImageBitmap()
+                val file = File(attachment.localPath)
+                if (file.exists() && file.length() > 0) {
+                    val options = BitmapFactory.Options().apply { inSampleSize = 2 }
+                    BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
+                } else null
             }.getOrNull()
         }
+        isLoaded = true
     }
+
     val image = bitmap
     if (image != null) {
         Image(
@@ -485,12 +586,24 @@ fun AttachmentImage(attachment: ChatAttachment, modifier: Modifier = Modifier) {
             modifier = modifier,
             contentScale = ContentScale.Crop,
         )
-    } else {
+    } else if (!isLoaded) {
         Box(
             modifier = modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
             contentAlignment = Alignment.Center,
         ) {
             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        }
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.BrokenImage,
+                contentDescription = "Image unavailable",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 }
@@ -565,12 +678,17 @@ private fun MessageItem(
     isLast: Boolean,
     showFooter: Boolean,
     onRetry: () -> Unit,
+    onEdit: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
         when {
             message.isTool -> ToolStep(message)
-            message.isUser -> UserMessage(message)
+            message.isUser -> UserMessage(
+                message = message,
+                canEdit = !isStreaming,
+                onEdit = onEdit,
+            )
             isHiddenToolCall(message) -> ToolRunningStep(message)
             else -> AssistantMessage(
                 message = message,
@@ -583,9 +701,25 @@ private fun MessageItem(
     }
 }
 
+@Suppress("DEPRECATION")
 @Composable
-private fun UserMessage(message: ChatMessage) {
+private fun UserMessage(
+    message: ChatMessage,
+    canEdit: Boolean,
+    onEdit: (String) -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
+    var copied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1_500)
+            copied = false
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -623,6 +757,49 @@ private fun UserMessage(message: ChatMessage) {
                     color = colors.onSurface,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                 )
+            }
+            Row(
+                modifier = Modifier.padding(top = 2.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            clipboard.setText(AnnotatedString(message.content))
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            copied = true
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                        contentDescription = "Copy message",
+                        modifier = Modifier.size(13.dp),
+                        tint = if (copied) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
+                if (canEdit) {
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onEdit(message.id)
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = "Edit and resend message",
+                            modifier = Modifier.size(13.dp),
+                            tint = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                        )
+                    }
+                }
             }
         }
     }
@@ -829,7 +1006,7 @@ private fun AssistantMessage(
         }
 
         if (!isStreaming && showFooter && message.content.isNotBlank()) {
-            MessageFooter(text = message.content, modelId = message.model)
+            MessageFooter(text = message.content, modelId = message.model, durationMs = message.durationMs)
         }
     }
 }
@@ -876,11 +1053,15 @@ private fun ErrorCard(error: String, canRetry: Boolean, onRetry: () -> Unit) {
     }
 }
 
+@Suppress("DEPRECATION")
 @Composable
-private fun MessageFooter(text: String, modelId: String?) {
+private fun MessageFooter(text: String, modelId: String?, durationMs: Long?) {
     val colors = MaterialTheme.colorScheme
     val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
     var copied by remember { mutableStateOf(false) }
+    val words = remember(text) { countWords(text) }
+
     LaunchedEffect(copied) {
         if (copied) {
             kotlinx.coroutines.delay(1_500)
@@ -890,7 +1071,7 @@ private fun MessageFooter(text: String, modelId: String?) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 2.dp),
+            .padding(top = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -899,6 +1080,7 @@ private fun MessageFooter(text: String, modelId: String?) {
                 .clip(CircleShape)
                 .clickable {
                     clipboard.setText(AnnotatedString(text))
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     copied = true
                 },
             contentAlignment = Alignment.Center,
@@ -907,7 +1089,7 @@ private fun MessageFooter(text: String, modelId: String?) {
                 imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                 contentDescription = if (copied) "Copied" else "Copy response",
                 modifier = Modifier.size(15.dp),
-                tint = colors.onSurfaceVariant,
+                tint = if (copied) colors.primary else colors.onSurfaceVariant,
             )
         }
         if (modelId != null) {
@@ -918,6 +1100,20 @@ private fun MessageFooter(text: String, modelId: String?) {
                 color = colors.onSurfaceVariant.copy(alpha = 0.75f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (words > 0) {
+            Text(
+                text = "  ·  $words words",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant.copy(alpha = 0.6f),
+            )
+        }
+        if (durationMs != null && durationMs > 0) {
+            Text(
+                text = "  ·  ${formatDuration(durationMs)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant.copy(alpha = 0.6f),
             )
         }
     }
@@ -968,8 +1164,34 @@ private fun ChatMarkdown(content: String) {
     )
 }
 
-// The default table renders every cell on one ellipsized line; wrap cell text instead.
+// Custom components for tables and code blocks with language pills and copy buttons.
 private val wrappingTableComponents = markdownComponents(
+    codeFence = { model ->
+        MarkdownCodeFence(
+            content = model.content,
+            node = model.node,
+            style = model.typography.code,
+        ) { code, language, style ->
+            CodeBlockView(
+                code = code,
+                language = language,
+                style = style,
+            )
+        }
+    },
+    codeBlock = { model ->
+        MarkdownCodeBlock(
+            content = model.content,
+            node = model.node,
+            style = model.typography.code,
+        ) { code, language, style ->
+            CodeBlockView(
+                code = code,
+                language = language,
+                style = style,
+            )
+        }
+    },
     table = { model ->
         MarkdownTable(
             content = model.content,
@@ -1000,6 +1222,90 @@ private val wrappingTableComponents = markdownComponents(
         )
     },
 )
+
+@Suppress("DEPRECATION")
+@Composable
+private fun CodeBlockView(
+    code: String,
+    language: String?,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier = Modifier,
+) {
+    val clipboard = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
+    var copied by remember { mutableStateOf(false) }
+    val colors = MaterialTheme.colorScheme
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1_500)
+            copied = false
+        }
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = colors.surfaceContainerHigh,
+        border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.6f)),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.surfaceContainerHighest.copy(alpha = 0.5f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = language?.ifBlank { "code" } ?: "code",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = OpenCodeMono),
+                    color = colors.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            clipboard.setText(AnnotatedString(code))
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            copied = true
+                        }
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                        contentDescription = if (copied) "Copied" else "Copy code",
+                        modifier = Modifier.size(13.dp),
+                        tint = if (copied) colors.primary else colors.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (copied) "Copied" else "Copy",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (copied) colors.primary else colors.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.5f))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = code,
+                    style = style,
+                    color = colors.onSurface,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun ThinkingDots() {

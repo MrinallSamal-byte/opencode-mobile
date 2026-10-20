@@ -29,6 +29,7 @@ data class ChatMessage(
     val reasoning: String = "",
     val model: String? = null,
     val timestamp: Long,
+    val durationMs: Long? = null,
     val error: String? = null,
     val attachments: List<ChatAttachment> = emptyList(),
     val toolCalls: List<ChatToolCall> = emptyList(),

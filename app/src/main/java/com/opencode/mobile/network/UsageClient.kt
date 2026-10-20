@@ -61,17 +61,23 @@ class UsageClient(
         val apiMessage = runCatching {
             val element = Json.parseToJsonElement(body)
             val obj = element as? JsonObject ?: return@runCatching null
-            val error = obj["error"] as? JsonObject
-            (error?.get("message") as? JsonPrimitive)?.content
-                ?: (obj["message"] as? JsonPrimitive)?.content
-        }.getOrNull()
+            val error = obj["error"]
+            when (error) {
+                is JsonObject -> (error["message"] as? JsonPrimitive)?.content
+                    ?: (error["msg"] as? JsonPrimitive)?.content
+                    ?: (error["detail"] as? JsonPrimitive)?.content
+                is JsonPrimitive -> error.content
+                else -> (obj["message"] as? JsonPrimitive)?.content
+                    ?: (obj["detail"] as? JsonPrimitive)?.content
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
 
         return when (code) {
-            401 -> "Invalid or expired API key. Check it in Settings."
-            403 -> "This API key doesn't have an OpenCode Go subscription."
-            404 -> "Usage isn't available from this endpoint."
-            429 -> "Rate limited by OpenCode Go. Try again in a moment."
-            in 500..599 -> "OpenCode Go is having trouble right now (HTTP $code)."
+            401 -> apiMessage ?: "Invalid or expired API key. Check it in Settings."
+            403 -> apiMessage ?: "This API key doesn't have an OpenCode Go subscription."
+            404 -> apiMessage ?: "Usage isn't available from this endpoint."
+            429 -> apiMessage ?: "Rate limited by OpenCode Go. Try again in a moment."
+            in 500..599 -> apiMessage ?: "OpenCode Go is having trouble right now (HTTP $code)."
             else -> apiMessage ?: "Could not load usage (HTTP $code)."
         }
     }

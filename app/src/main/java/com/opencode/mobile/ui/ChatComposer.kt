@@ -406,13 +406,17 @@ private fun SendButton(
     onStop: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val active = isStreaming || enabled
     Box(
         modifier = Modifier
             .size(34.dp)
             .clip(CircleShape)
             .background(if (active) colors.primary else colors.surfaceContainerHighest)
-            .clickable(enabled = active) { if (isStreaming) onStop() else onSend() },
+            .clickable(enabled = active) {
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                if (isStreaming) onStop() else onSend()
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(

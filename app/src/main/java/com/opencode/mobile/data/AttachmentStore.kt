@@ -77,18 +77,20 @@ class AttachmentStore(private val context: Context) {
 
     private fun saveImage(uri: Uri, target: File) {
         val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val source = ImageDecoder.createSource(resolver, uri)
-            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                val maxDimension = max(info.size.width, info.size.height)
-                if (maxDimension > MAX_IMAGE_DIMENSION) {
-                    val scale = MAX_IMAGE_DIMENSION.toFloat() / maxDimension
-                    decoder.setTargetSize(
-                        (info.size.width * scale).toInt().coerceAtLeast(1),
-                        (info.size.height * scale).toInt().coerceAtLeast(1),
-                    )
+            runCatching {
+                val source = ImageDecoder.createSource(resolver, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val maxDimension = max(info.size.width, info.size.height)
+                    if (maxDimension > MAX_IMAGE_DIMENSION) {
+                        val scale = MAX_IMAGE_DIMENSION.toFloat() / maxDimension
+                        decoder.setTargetSize(
+                            (info.size.width * scale).toInt().coerceAtLeast(1),
+                            (info.size.height * scale).toInt().coerceAtLeast(1),
+                        )
+                    }
                 }
-            }
+            }.getOrElse { decodeSampled(uri) }
         } else {
             decodeSampled(uri)
         }

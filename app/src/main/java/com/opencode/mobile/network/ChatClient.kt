@@ -75,6 +75,7 @@ class ChatClient(
                 webSearchEnabled = webSearchEnabled,
                 shellEnabled = shellEnabled,
                 systemHint = systemHint,
+                customSystemPrompt = settings.customSystemPrompt,
             )
         }
 
@@ -124,9 +125,13 @@ class ChatClient(
                                     break
                                 }
                             }
-                        } catch (e: IOException) {
+                        } catch (e: Exception) {
                             if (!call.isCanceled()) {
-                                trySend(StreamEvent.Failure(friendlyNetworkError(e)))
+                                val errorText = when (e) {
+                                    is IOException -> friendlyNetworkError(e)
+                                    else -> e.message ?: "Streaming connection failed."
+                                }
+                                trySend(StreamEvent.Failure(errorText))
                             }
                         } finally {
                             close()
@@ -172,6 +177,7 @@ class ChatClient(
         }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     private suspend fun buildPayload(
         modelId: String,
         thinkingEffort: ThinkingEffort,
@@ -179,10 +185,17 @@ class ChatClient(
         webSearchEnabled: Boolean,
         shellEnabled: Boolean,
         systemHint: String?,
+        customSystemPrompt: String = "",
     ): JsonObject {
         val allowedMedia = ModelCatalog.mediaKindsFor(modelId)
         val history = trimmedHistory(messages).mapNotNull { messageToJson(it, allowedMedia) }
-        val system = systemHint ?: if (webSearchEnabled || shellEnabled) toolGuidance() else null
+        val customPrompt = customSystemPrompt.trim().takeIf { it.isNotBlank() }
+        val systemGuidance = systemHint ?: if (webSearchEnabled || shellEnabled) toolGuidance() else null
+        val system = when {
+            customPrompt != null && systemGuidance != null -> "$customPrompt\n\n$systemGuidance"
+            customPrompt != null -> customPrompt
+            else -> systemGuidance
+        }
         return buildJsonObject {
             put("model", modelId)
             put("stream", true)
@@ -230,7 +243,11 @@ class ChatClient(
         if (message.role == ChatMessage.ROLE_ASSISTANT && message.toolCalls.isNotEmpty()) {
             return buildJsonObject {
                 put("role", ChatMessage.ROLE_ASSISTANT)
-                put("content", message.content)
+                if (message.content.isNotBlank()) {
+                    put("content", message.content)
+                } else {
+                    put("content", null as String?)
+                }
                 putJsonArray("tool_calls") {
                     message.toolCalls.forEach { call ->
                         add(
@@ -319,7 +336,7 @@ class ChatClient(
         }
     }
 
-    private fun trimmedHistory(messages: List<ChatMessage>): List<ChatMessage> {
+    internal fun trimmedHistory(messages: List<ChatMessage>): List<ChatMessage> {
         val valid = messages.filter { message ->
             message.error == null && (
                 message.isTool ||
@@ -341,10 +358,24 @@ class ChatClient(
             result = result.drop(1)
         }
 
+        // 1. Tool result IDs present in the trimmed list
         val toolResultIds = result.filter { it.isTool }.mapNotNull { it.toolCallId }.toSet()
-        return result.filterNot { message ->
+        // 2. Filter out assistant messages whose tool calls are not completely answered
+        result = result.filterNot { message ->
             message.toolCalls.isNotEmpty() && message.toolCalls.any { it.id !in toolResultIds }
         }
+        // 3. Compute all valid tool call IDs that are actually retained in assistant messages
+        val keptToolCallIds = result.filter { !it.isUser && !it.isTool && it.toolCalls.isNotEmpty() }
+            .flatMap { it.toolCalls }
+            .map { it.id }
+            .toSet()
+        // 4. Remove orphan tool messages whose calling assistant message was discarded
+        result = result.filterNot { it.isTool && it.toolCallId !in keptToolCallIds }
+        // 5. Ensure the history never begins with a tool result or assistant tool-call turn
+        while (result.isNotEmpty() && (result.first().isTool || result.first().toolCalls.isNotEmpty())) {
+            result = result.drop(1)
+        }
+        return result
     }
 
     private fun webSearchTool(): JsonObject = buildJsonObject {
@@ -421,17 +452,23 @@ class ChatClient(
         val apiMessage = runCatching {
             val element = kotlinx.serialization.json.Json.parseToJsonElement(body)
             val obj = element as? JsonObject ?: return@runCatching null
-            val error = obj["error"] as? JsonObject
-            (error?.get("message") as? JsonPrimitive)?.content
-                ?: (obj["message"] as? JsonPrimitive)?.content
-        }.getOrNull()
+            val error = obj["error"]
+            when (error) {
+                is JsonObject -> (error["message"] as? JsonPrimitive)?.content
+                    ?: (error["msg"] as? JsonPrimitive)?.content
+                    ?: (error["detail"] as? JsonPrimitive)?.content
+                is JsonPrimitive -> error.content
+                else -> (obj["message"] as? JsonPrimitive)?.content
+                    ?: (obj["detail"] as? JsonPrimitive)?.content
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
 
         return when (code) {
-            401, 403 -> "Invalid or expired API key. Check it in Settings."
-            402 -> "OpenCode Go needs credits. Add credits in the OpenCode Console."
-            404 -> "That model is unavailable. Pick a different model."
-            429 -> "Rate limited by OpenCode Go. Try again in a moment."
-            in 500..599 -> "OpenCode Go is having trouble right now (HTTP $code)."
+            401, 403 -> apiMessage ?: "Invalid or expired API key. Check it in Settings."
+            402 -> apiMessage ?: "OpenCode Go needs credits. Add credits in the OpenCode Console."
+            404 -> apiMessage ?: "That model is unavailable. Pick a different model."
+            429 -> apiMessage ?: "Rate limited by OpenCode Go. Try again in a moment."
+            in 500..599 -> apiMessage ?: "OpenCode Go is having trouble right now (HTTP $code)."
             else -> apiMessage ?: "Request failed (HTTP $code)."
         }
     }

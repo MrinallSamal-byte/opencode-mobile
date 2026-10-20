@@ -7,10 +7,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
 
 data class WebResult(
@@ -20,6 +22,7 @@ data class WebResult(
 )
 
 object WebSearchParser {
+    private val json = Json { ignoreUnknownKeys = true }
     private val blockStart = Regex("""<div class="snippet [^"]*" data-pos="\d+" data-type="web"""")
     private val titleRegex = Regex("""<div class="title search-snippet-title[^"]*"[^>]*title="([^"]*)"""")
     private val titleTextRegex = Regex("""<div class="title search-snippet-title[^"]*"[^>]*>(.*?)</div>""", RegexOption.DOT_MATCHES_ALL)
@@ -47,6 +50,70 @@ object WebSearchParser {
             if (results.size >= limit) break
         }
         return results
+    }
+
+    private val ddgBlockRegex = Regex("""<div[^>]*class="[^"]*web-result[^"]*"[^>]*>(.*?)</div>\s*</div>""", RegexOption.DOT_MATCHES_ALL)
+    private val ddgLinkRegex = Regex("""<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+    private val ddgSnippetRegex = Regex("""<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+
+    fun parseDuckDuckGoHtml(html: String, limit: Int = 6): List<WebResult> {
+        val results = mutableListOf<WebResult>()
+        val seen = mutableSetOf<String>()
+        val blocks = ddgBlockRegex.findAll(html).map { it.groupValues[1] }.toList()
+        for (block in blocks) {
+            val linkMatch = ddgLinkRegex.find(block) ?: continue
+            var rawUrl = linkMatch.groupValues[1]
+            if (rawUrl.contains("duckduckgo.com/y.js")) continue
+            if (rawUrl.contains("uddg=")) {
+                val encoded = rawUrl.substringAfter("uddg=").substringBefore('&')
+                rawUrl = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrDefault(rawUrl)
+            }
+            if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) continue
+            if (!seen.add(rawUrl)) continue
+
+            val rawTitle = linkMatch.groupValues[2]
+            val rawSnippet = ddgSnippetRegex.find(block)?.groupValues?.get(1).orEmpty()
+            results += WebResult(
+                title = clean(rawTitle),
+                url = rawUrl,
+                snippet = clean(rawSnippet).take(400),
+            )
+            if (results.size >= limit) break
+        }
+        return results
+    }
+
+    fun parseInstantAnswer(jsonString: String, limit: Int = 6): List<WebResult> {
+        val root = runCatching {
+            json.parseToJsonElement(jsonString) as? JsonObject
+        }.getOrNull() ?: return emptyList()
+
+        val results = mutableListOf<WebResult>()
+        val seen = mutableSetOf<String>()
+
+        val abstract = (root["Abstract"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        val abstractUrl = (root["AbstractURL"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        if (abstract.isNotBlank() && abstractUrl.isNotBlank()) {
+            results += WebResult("DuckDuckGo summary", abstractUrl, abstract)
+            seen.add(abstractUrl)
+        }
+
+        fun extractTopic(topic: JsonObject) {
+            val text = (topic["Text"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+            val url = (topic["FirstURL"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+            if (text.isNotBlank() && url.isNotBlank() && seen.add(url)) {
+                results += WebResult(clean(text).take(80), url, clean(text).take(400))
+            }
+        }
+
+        (root["RelatedTopics"] as? JsonArray)?.forEach { element ->
+            val topic = element as? JsonObject ?: return@forEach
+            extractTopic(topic)
+            (topic["Topics"] as? JsonArray)?.forEach { subElement ->
+                (subElement as? JsonObject)?.let { extractTopic(it) }
+            }
+        }
+        return results.take(limit)
     }
 
     fun clean(value: String): String {
@@ -78,13 +145,34 @@ class WebSearchClient(
     suspend fun search(query: String): String = withContext(Dispatchers.IO) {
         val trimmed = query.trim().take(300)
         if (trimmed.isEmpty()) throw IOException("The search query was empty.")
-        val results = runCatching { searchBrave(trimmed) }.getOrElse { emptyList() }
-        if (results.isNotEmpty()) return@withContext format(trimmed, results)
+        val braveResults = runCatching { searchBrave(trimmed) }.getOrElse { emptyList() }
+        if (braveResults.isNotEmpty()) return@withContext format(trimmed, braveResults)
+
+        val ddgResults = runCatching { searchDuckDuckGoHtml(trimmed) }.getOrElse { emptyList() }
+        if (ddgResults.isNotEmpty()) return@withContext format(trimmed, ddgResults)
 
         val fallback = runCatching { searchInstantAnswer(trimmed) }.getOrElse { emptyList() }
         if (fallback.isNotEmpty()) return@withContext format(trimmed, fallback)
 
         "No web results found for \"$trimmed\". Try a different query."
+    }
+
+    private fun searchDuckDuckGoHtml(query: String): List<WebResult> {
+        val formBody = FormBody.Builder()
+            .add("q", query)
+            .build()
+        val request = Request.Builder()
+            .url("https://html.duckduckgo.com/html/")
+            .header("User-Agent", BROWSER_USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .post(formBody)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return emptyList()
+            val body = response.body.string()
+            return WebSearchParser.parseDuckDuckGoHtml(body)
+        }
     }
 
     private fun searchBrave(query: String): List<WebResult> {
@@ -121,23 +209,8 @@ class WebSearchClient(
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return emptyList()
-            val root = runCatching { json.parseToJsonElement(response.body.string()) as? JsonObject }
-                .getOrNull() ?: return emptyList()
-            val results = mutableListOf<WebResult>()
-            val abstract = (root["Abstract"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-            val abstractUrl = (root["AbstractURL"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-            if (abstract.isNotBlank() && abstractUrl.isNotBlank()) {
-                results += WebResult("DuckDuckGo summary", abstractUrl, abstract)
-            }
-            (root["RelatedTopics"] as? JsonArray)?.forEach { element ->
-                val topic = element as? JsonObject ?: return@forEach
-                val text = (topic["Text"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-                val url = (topic["FirstURL"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-                if (text.isNotBlank() && url.isNotBlank()) {
-                    results += WebResult(text.take(80), url, text)
-                }
-            }
-            return results.take(5)
+            val body = response.body.string()
+            return WebSearchParser.parseInstantAnswer(body)
         }
     }
 

@@ -96,4 +96,43 @@ class SseParserTest {
         )
         assertEquals("step one", result?.reasoning)
     }
+
+    @Test
+    fun `supports thought delta`() {
+        val result = SseParser.parse(
+            """{"choices":[{"delta":{"thought":"deep thought"},"finish_reason":null}]}""",
+        )
+        assertEquals("deep thought", result?.reasoning)
+    }
+
+    @Test
+    fun `assigns fallback index when index is omitted`() {
+        val result = SseParser.parse(
+            """{"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"search"}},{"id":"call_b","function":{"name":"shell"}}]}}]}""",
+        )
+        assertEquals(2, result?.toolCalls?.size)
+        assertEquals(0, result?.toolCalls?.get(0)?.index)
+        assertEquals(1, result?.toolCalls?.get(1)?.index)
+    }
+
+    @Test
+    fun `parses string error payload`() {
+        val result = SseParser.parse("""{"error":"Too many requests"}""")
+        assertEquals("Too many requests", result?.error)
+    }
+
+    @Test
+    fun `parses root detail error payload`() {
+        val result = SseParser.parse("""{"detail":"Unauthorized token"}""")
+        assertEquals("Unauthorized token", result?.error)
+    }
+
+    @Test
+    fun `parses choice message fallback`() {
+        val result = SseParser.parse(
+            """{"choices":[{"message":{"content":"Direct message content"},"finish_reason":"stop"}]}""",
+        )
+        assertEquals("Direct message content", result?.content)
+        assertTrue(result!!.finished)
+    }
 }

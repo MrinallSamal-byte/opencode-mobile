@@ -52,6 +52,12 @@ sealed interface ChatEvent {
     data object Deleted : ChatEvent
 }
 
+private val lenientJson = Json {
+    isLenient = true
+    ignoreUnknownKeys = true
+    coerceInputValues = true
+}
+
 private data class MutableToolCall(
     var id: String? = null,
     var name: String? = null,
@@ -76,6 +82,7 @@ class ChatViewModel(
     private var streamJob: Job? = null
     private var persisted = false
     private var isDeleted = false
+    private var userStopped = false
     private val saveMutex = Mutex()
 
     init {
@@ -199,10 +206,12 @@ class ChatViewModel(
                 isStreaming = true,
             )
         }
+        userStopped = false
         runAgent(updated)
     }
 
     fun stop() {
+        userStopped = true
         streamJob?.cancel()
     }
 
@@ -213,6 +222,7 @@ class ChatViewModel(
         val last = conversation.messages.lastOrNull() ?: return
         if (last.role != ChatMessage.ROLE_ASSISTANT || last.error == null) return
 
+        userStopped = false
         val updated = conversation.copy(
             messages = conversation.messages.dropLast(1),
             updatedAt = System.currentTimeMillis(),
@@ -291,6 +301,56 @@ class ChatViewModel(
         }
     }
 
+    fun editMessage(messageId: String) {
+        if (_state.value.isStreaming) return
+        val conversation = _state.value.conversation ?: return
+        val index = conversation.messages.indexOfFirst { it.id == messageId }
+        if (index < 0) return
+        val message = conversation.messages[index]
+        if (!message.isUser) return
+
+        val updatedMessages = conversation.messages.take(index)
+        val updated = conversation.copy(
+            messages = updatedMessages,
+            updatedAt = System.currentTimeMillis(),
+        )
+        _state.update {
+            it.copy(
+                conversation = updated,
+                draft = message.content,
+            )
+        }
+        if (persisted) {
+            viewModelScope.launch { saveCurrent() }
+        }
+    }
+
+    fun rename(newTitle: String) {
+        val conversation = _state.value.conversation ?: return
+        val trimmed = newTitle.trim().take(100)
+        if (trimmed.isEmpty() || trimmed == conversation.title) return
+        val updated = conversation.copy(title = trimmed)
+        _state.update { it.copy(conversation = updated) }
+        if (persisted) {
+            viewModelScope.launch { saveCurrent() }
+        }
+    }
+
+    fun forkConversation(onForked: (String) -> Unit) {
+        val conversation = _state.value.conversation ?: return
+        viewModelScope.launch {
+            val forked = conversationStore.fork(conversation.id)
+            if (forked != null) {
+                onForked(forked.id)
+            }
+        }
+    }
+
+    fun exportMarkdown(): String? {
+        val conversation = _state.value.conversation ?: return null
+        return conversationStore.exportToMarkdown(conversation)
+    }
+
     override fun onCleared() {
         _state.value.pendingAttachments.forEach(attachmentStore::delete)
         super.onCleared()
@@ -350,7 +410,12 @@ class ChatViewModel(
                                 failure = event.message
                                 updateAssistant { it.copy(error = event.message) }
                             }
-                            StreamEvent.Finished -> Unit
+                            StreamEvent.Finished -> {
+                                val duration = (System.currentTimeMillis() - now).coerceAtLeast(50)
+                                updateAssistant { current ->
+                                    if (current.durationMs == null) current.copy(durationMs = duration) else current
+                                }
+                            }
                         }
                     }
 
@@ -464,14 +529,18 @@ class ChatViewModel(
         val messages = conversation.messages.toMutableList()
         val last = messages.lastOrNull()
         if (last != null && last.role == ChatMessage.ROLE_ASSISTANT) {
-            if (last.error == null &&
-                last.content.isBlank() &&
-                last.reasoning.isBlank() &&
-                last.toolCalls.isEmpty()
-            ) {
+            val isEmpty = last.content.isBlank() && last.reasoning.isBlank() && last.toolCalls.isEmpty()
+            if (userStopped) {
+                if (isEmpty) {
+                    messages.removeAt(messages.lastIndex)
+                }
+            } else if (last.error == null && isEmpty) {
                 messages[messages.lastIndex] = last.copy(
                     error = "The model returned an empty response. Try again.",
                 )
+            } else if (last.durationMs == null && (last.content.isNotBlank() || last.reasoning.isNotBlank())) {
+                val elapsed = (System.currentTimeMillis() - last.timestamp).coerceAtLeast(50)
+                messages[messages.lastIndex] = last.copy(durationMs = elapsed)
             }
         }
         val finalConversation = conversation.copy(
@@ -480,6 +549,7 @@ class ChatViewModel(
         )
         _state.update { it.copy(conversation = finalConversation, isStreaming = false) }
         saveCurrent()
+        userStopped = false
     }
 
     private suspend fun saveCurrent() {
@@ -506,13 +576,16 @@ class ChatViewModel(
 
     private fun extractArgument(arguments: String, key: String): String? {
         val parsed = runCatching {
-            Json.parseToJsonElement(arguments).jsonObject
+            lenientJson.parseToJsonElement(arguments).jsonObject
         }.getOrNull()
         (parsed?.get(key) as? JsonPrimitive)?.contentOrNull?.let { return it }
         val pattern = Regex("\"${Regex.escape(key)}\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"")
         return pattern.find(arguments)?.groupValues?.get(1)
             ?.replace("\\\"", "\"")
             ?.replace("\\\\", "\\")
+            ?.replace("\\n", "\n")
+            ?.replace("\\r", "\r")
+            ?.replace("\\t", "\t")
     }
 
     private fun autoTitle(text: String): String {

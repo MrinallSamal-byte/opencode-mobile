@@ -17,6 +17,9 @@ class ShellTool(context: Context) {
             return@withContext "Shell error: command is longer than $MAX_COMMAND_LENGTH characters."
         }
 
+        workspace.mkdirs()
+        temp.mkdirs()
+
         val process = ProcessBuilder("/system/bin/sh", "-c", trimmed)
             .directory(workspace)
             .redirectErrorStream(true)
@@ -26,16 +29,25 @@ class ShellTool(context: Context) {
             }
             .start()
 
-        val output = StringBuilder()
-        var truncated = false
+        val output = StringBuffer()
+        val truncated = java.util.concurrent.atomic.AtomicBoolean(false)
         val reader = Thread {
             runCatching {
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
+                process.inputStream.bufferedReader().use { r ->
+                    val buffer = CharArray(2048)
+                    while (true) {
+                        val read = r.read(buffer)
+                        if (read <= 0) break
                         if (output.length < MAX_OUTPUT_CHARS) {
-                            output.append(line).append('\n')
+                            val available = (MAX_OUTPUT_CHARS - output.length).coerceAtMost(read)
+                            output.append(buffer, 0, available)
+                            if (available < read) {
+                                truncated.set(true)
+                                break
+                            }
                         } else {
-                            truncated = true
+                            truncated.set(true)
+                            break
                         }
                     }
                 }
@@ -48,6 +60,7 @@ class ShellTool(context: Context) {
         val finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         if (!finished) {
             process.destroyForcibly()
+            runCatching { process.inputStream.close() }
             process.waitFor(2, TimeUnit.SECONDS)
         }
         reader.join(1_000)
@@ -63,7 +76,7 @@ class ShellTool(context: Context) {
             append("\nWorking directory: ").append(workspace.absolutePath)
             append("\n\n")
             append(output.toString().trimEnd())
-            if (truncated) append("\n[output truncated]")
+            if (truncated.get()) append("\n[output truncated]")
         }.take(MAX_OUTPUT_CHARS + 500)
     }
 

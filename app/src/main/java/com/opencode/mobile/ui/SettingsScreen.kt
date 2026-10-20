@@ -22,7 +22,9 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,13 +37,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -156,6 +159,20 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            SectionTitle(icon = Icons.Outlined.Psychology, title = "Custom instructions")
+            OutlinedTextField(
+                value = state.customSystemPrompt,
+                onValueChange = viewModel::setCustomSystemPrompt,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("System instructions") },
+                placeholder = { Text("e.g. Always respond in concise Kotlin. Prefer clear error handling.") },
+                minLines = 3,
+                maxLines = 6,
+                shape = RoundedCornerShape(16.dp),
+                supportingText = {
+                    Text("Optional instructions prepended to the system prompt in every conversation.")
+                },
+            )
             SectionTitle(icon = Icons.Outlined.Tune, title = "API base URL")
             OutlinedTextField(
                 value = state.baseUrl,
@@ -180,6 +197,26 @@ fun SettingsScreen(
                     Text(if (state.testing) "Testing…" else "Test connection")
                 }
                 TextButton(onClick = viewModel::resetBaseUrl) { Text("Reset URL") }
+            }
+            HorizontalDivider()
+            SectionTitle(icon = Icons.Outlined.Vibration, title = "Haptics")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Haptic feedback", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Vibrate on send, stop, copy, and stream events",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.hapticFeedbackEnabled,
+                    onCheckedChange = viewModel::setHapticFeedbackEnabled,
+                )
             }
             HorizontalDivider()
             SectionTitle(icon = Icons.Outlined.Palette, title = "Appearance")
@@ -277,7 +314,7 @@ private fun ModelSelector(
             readOnly = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
             label = { Text("Model") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             shape = RoundedCornerShape(16.dp),
@@ -353,7 +390,7 @@ private fun AboutCard() {
             Column {
                 Text("OpenCode Mobile", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "Version 1.0.0 · Community client for OpenCode Go",
+                    text = "Version 1.0.1 · Developed by Mrinall Samal",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

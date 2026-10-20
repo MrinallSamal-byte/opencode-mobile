@@ -23,6 +23,8 @@ data class SettingsUiState(
     val baseUrl: String = AppSettings.DEFAULT_BASE_URL,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val thinkingEffort: ThinkingEffort = ThinkingEffort.AUTO,
+    val customSystemPrompt: String = "",
+    val hapticFeedbackEnabled: Boolean = true,
     val testing: Boolean = false,
 )
 
@@ -43,6 +45,8 @@ class SettingsViewModel(
             baseUrl = loaded.baseUrl,
             themeMode = loaded.themeMode,
             thinkingEffort = ThinkingEffort.from(loaded.thinkingEffort),
+            customSystemPrompt = loaded.customSystemPrompt,
+            hapticFeedbackEnabled = loaded.hapticFeedbackEnabled,
         ),
     )
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
@@ -77,6 +81,14 @@ class SettingsViewModel(
         }
     }
 
+    fun setCustomSystemPrompt(value: String) {
+        _state.update { it.copy(customSystemPrompt = value) }
+    }
+
+    fun setHapticFeedbackEnabled(value: Boolean) {
+        _state.update { it.copy(hapticFeedbackEnabled = value) }
+    }
+
     fun resetBaseUrl() {
         _state.update { it.copy(baseUrl = AppSettings.DEFAULT_BASE_URL) }
     }
@@ -106,6 +118,8 @@ class SettingsViewModel(
             baseUrl = baseUrl,
             themeMode = current.themeMode,
             thinkingEffort = ModelCatalog.resolveEffort(modelId, current.thinkingEffort).name,
+            customSystemPrompt = current.customSystemPrompt.trim(),
+            hapticFeedbackEnabled = current.hapticFeedbackEnabled,
         )
         settingsStore.save(settings)
         _state.update { it.copy(modelId = modelId, baseUrl = baseUrl) }
@@ -129,6 +143,9 @@ class SettingsViewModel(
             modelId = current.modelId.trim(),
             baseUrl = url,
             themeMode = current.themeMode,
+            thinkingEffort = ModelCatalog.resolveEffort(current.modelId.trim(), current.thinkingEffort).name,
+            customSystemPrompt = current.customSystemPrompt.trim(),
+            hapticFeedbackEnabled = current.hapticFeedbackEnabled,
         )
         viewModelScope.launch {
             _state.update { it.copy(testing = true) }

@@ -33,3 +33,18 @@ fun resetLabel(resetAt: Long, now: Long = System.currentTimeMillis()): String {
         else -> "Resets in ${minutes}m"
     }
 }
+
+fun formatDuration(ms: Long): String {
+    return if (ms < 1000) {
+        "${ms}ms"
+    } else {
+        val seconds = ms / 1000.0
+        String.format(Locale.US, "%.1fs", seconds)
+    }
+}
+
+fun countWords(text: String): Int {
+    if (text.isBlank()) return 0
+    return text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
+}
+

@@ -19,6 +19,8 @@ data class AppSettings(
     val baseUrl: String = DEFAULT_BASE_URL,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val thinkingEffort: String = ThinkingEffort.AUTO.name,
+    val customSystemPrompt: String = "",
+    val hapticFeedbackEnabled: Boolean = true,
 ) {
     val hasApiKey: Boolean get() = apiKey.isNotBlank()
     val chatEndpoint: String get() = baseUrl.trimEnd('/') + "/chat/completions"
@@ -57,6 +59,8 @@ class SettingsStore(context: Context) {
                 .ifBlank { AppSettings.DEFAULT_BASE_URL },
             themeMode = ThemeMode.from(prefs.getString(KEY_THEME, null)),
             thinkingEffort = ThinkingEffort.from(prefs.getString(KEY_THINKING, null)).name,
+            customSystemPrompt = prefs.getString(KEY_CUSTOM_SYSTEM_PROMPT, "").orEmpty(),
+            hapticFeedbackEnabled = prefs.getBoolean(KEY_HAPTIC_FEEDBACK, true),
         )
     }
 
@@ -65,12 +69,17 @@ class SettingsStore(context: Context) {
             if (settings.apiKey.isBlank()) {
                 remove(KEY_API_KEY)
             } else {
-                putString(KEY_API_KEY, secureKeyStore.encrypt(settings.apiKey.trim()))
+                val encrypted = secureKeyStore.encrypt(settings.apiKey.trim())
+                if (encrypted != null) {
+                    putString(KEY_API_KEY, encrypted)
+                }
             }
             putString(KEY_MODEL, settings.modelId.trim())
             putString(KEY_BASE_URL, settings.baseUrl.trim())
             putString(KEY_THEME, settings.themeMode.name)
             putString(KEY_THINKING, settings.thinkingEffort)
+            putString(KEY_CUSTOM_SYSTEM_PROMPT, settings.customSystemPrompt)
+            putBoolean(KEY_HAPTIC_FEEDBACK, settings.hapticFeedbackEnabled)
         }.apply()
     }
 
@@ -85,5 +94,7 @@ class SettingsStore(context: Context) {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_THEME = "theme"
         private const val KEY_THINKING = "thinking_effort"
+        private const val KEY_CUSTOM_SYSTEM_PROMPT = "custom_system_prompt"
+        private const val KEY_HAPTIC_FEEDBACK = "haptic_feedback"
     }
 }

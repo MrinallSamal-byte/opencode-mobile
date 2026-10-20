@@ -2,6 +2,7 @@ package com.opencode.mobile.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -33,6 +35,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -105,6 +109,42 @@ fun ModelSheet(
                 onSubmit = { if (offerCustom) onSelect(trimmed) },
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             )
+            if (trimmed.isEmpty()) {
+                val quickModels = remember {
+                    listOf("glm-5.3", "deepseek-v4-pro", "qwen3.8-max", "kimi-k3", "minimax-m3.1-flash-free")
+                        .mapNotNull { qId -> models.firstOrNull { it.id == qId } }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    quickModels.forEach { model ->
+                        val isCurrent = model.id == currentModelId
+                        SuggestionChip(
+                            onClick = { onSelect(model.id) },
+                            label = { Text(model.name, style = MaterialTheme.typography.labelMedium) },
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                containerColor = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                },
+                                labelColor = if (isCurrent) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                            ),
+                            border = null,
+                            shape = RoundedCornerShape(10.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxWidth(),
